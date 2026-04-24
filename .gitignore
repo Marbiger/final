@@ -1,0 +1,28 @@
+# Python 缓存
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# 虚拟环境
+venv/
+env/
+ENV/
+
+# IDE 配置
+.vscode/
+.idea/
+
+# 模型文件（通常很大，不应提交）
+*.pth
+*.ckpt
+*.bin
+
+# 日志与输出
+*.log
+*.out
+*.err
+output/
+nohup.out
+
+.DS_Store

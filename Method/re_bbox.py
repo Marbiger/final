@@ -1,3 +1,5 @@
+# -*- coding: utf-8 -*-
+
 import argparse
 import os
 import sys
@@ -21,7 +23,7 @@ from models.model_re_bbox import Bench
 import logging
 import gc
 
-from models.tokenization_bert import BertTokenizer
+from transformers import BertTokenizer
 from models.tokenization_roberta import RobertaTokenizer
 
 import utils
@@ -72,6 +74,11 @@ def train(model, data_loader, optimizer, tokenizer, epoch, device, scheduler, co
                 
 
         outputs = model(image, caption.input_ids, caption.attention_mask, idx=idx, pair=pair_text_bbox)
+        
+        loss_itc = torch.tensor(0.0, device=device)
+        loss_itm = torch.tensor(0.0, device=device)
+        loss_bb  = torch.tensor(0.0, device=device)
+        loss_spatial = torch.tensor(0.0, device=device)
 
         if len(outputs) == 2:
             loss_itc, loss_itm = outputs
@@ -311,10 +318,15 @@ def main(args, config):
     cudnn.benchmark = True
 
     print("Creating model", flush=True)
+    
+    if config.get('use_llm_for_spatial', False):
+        config['llm_config_path'] = 'configs/llm_config.yaml'
+        print("### LLM Spatial Prediction Enabled")
+        
     model = Bench(config=config)
     model.load_pretrained(args.checkpoint, config, is_eval=args.evaluate)
     if args.evaluate:
-        model = model.half()   #每次evaluate 要开
+        model = model.half()  
     model = model.to(device)
     # if not args.evaluate:
     #     freeze_all_except_spatial_head(model)

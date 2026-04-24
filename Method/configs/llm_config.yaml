@@ -1,0 +1,34 @@
+model:
+  name: "/public/home/xuchg2022/Qwen2.5-7B-Instruct/Qwen2.5-7B-Instruct/"
+  device: "cuda"
+  precision: "fp16"
+
+generation:
+  max_new_tokens: 50
+  temperature: 0.1
+  top_p: 0.9
+  do_sample: true
+  repetition_penalty: 1.05
+
+prompt:
+  system: "You are an AI assistant that describes spatial relationships between two regions in an image. Given the coordinates of two bounding boxes, output a single phrase like 'left', 'right', 'above', 'below', 'upper left', etc."
+  user_template: "Region A center: ({cx1:.3f}, {cy1:.3f}), size: ({w1:.3f}, {h1:.3f})\nRegion B center: ({cx2:.3f}, {cy2:.3f}), size: ({w2:.3f}, {h2:.3f})\nWhat is the spatial relationship of Region B relative to Region A?"
+  relation_mapping:
+    left: 0
+    right: 2
+    above: 3
+    below: 5
+    center: 4
+    upper_left: 6
+    upper_right: 8
+    lower_left: 0
+    lower_right: 2
+    middle: 4
+    default: 4
+
+training:
+  freeze_llm: true
+  use_lora: false
+  lora_r: 8
+  lora_alpha: 32
+  lora_dropout: 0.1

@@ -2,6 +2,9 @@ import torch
 from models import XVLMBase, load_pretrained
 import itertools
 
+from models.llm_interface import SpatialLLMInterface
+from utils.llm_utils import LLMCache
+
 def compute_rela(bbox1, bbox2):
     x1, y1, w1, h1 = bbox1
     x2, y2, w2, h2 = bbox2
@@ -36,6 +39,15 @@ class Bench(XVLMBase):
 
         self.num_attention_heads = self.text_encoder.config.num_attention_heads
         self.init_params = []
+        
+        if config.get('use_llm_for_spatial', False):
+            self.llm_interface = SpatialLLMInterface(config['llm_config_path'])
+            self.llm_cache = LLMCache()
+            self.llm_loss_weight = config.get('llm_loss_weight', 0.01)
+        else:
+            self.llm_interface = None
+            self.llm_cache = None
+            self.llm_loss_weight = 0.0
 
     def load_pretrained(self, ckpt_rpath, config, is_eval=False):
         state_dict = load_pretrained(ckpt_rpath, config, is_eval=is_eval, load_text=True)
@@ -63,6 +75,7 @@ class Bench(XVLMBase):
             total_spatial_loss = 0
             loss_bb = 0
             size = 12 
+            all_valid_bboxes = [] 
             for i in range(n):
                 num = pair[i][0]
 
@@ -100,16 +113,60 @@ class Bench(XVLMBase):
                 if spatial_loss is not None: 
                     total_spatial_loss += spatial_loss
                     loss_count += 1
+                    
+                if self.llm_interface is not None:
+                    bbox = pair[i][2]
+                    
+                    if bbox[0] > -99:
+                        all_valid_bboxes.append({
+                            'bbox': bbox.cpu().numpy(), 
+                            'num': num
+                        })
 
             loss_bb = 0.1 * loss_bb/n
 
             self.bbox_collector.collect_bbox = []
             self.bbox_collector.current_num = None
+            
+            llm_aux_loss = 0.0
+            if self.llm_interface is not None and len(all_valid_bboxes) >= 2:
+                
+                from itertools import combinations
+                pairs = list(combinations(all_valid_bboxes, 2))
+                for (b1_info, b2_info) in pairs:
+                    bbox1 = b1_info['bbox']
+                    bbox2 = b2_info['bbox']
+                    
+                    h_v = compute_rela(bbox1, bbox2)  # tensor [2]
+                    
+                    true_class = int(h_v[1] * 3 + h_v[0])
+                    
+                    cache_key = (tuple(bbox1), tuple(bbox2))
+                    cached = self.llm_cache.get(bbox1, bbox2) if self.llm_cache else None
+                    if cached:
+                        pred_class = cached['relation_class']
+                    else:
+                        result = self.llm_interface.predict_spatial_relation(
+                            tuple(bbox1), tuple(bbox2)
+                        )
+                        pred_class = result.relation_class
+                        if self.llm_cache:
+                            self.llm_cache.set(bbox1, bbox2, {
+                                'relation_class': pred_class,
+                                'relation_text': result.relation_text,
+                                'confidence': result.confidence
+                            })
+                    
+                    if pred_class != true_class:
+                        llm_aux_loss += 1.0
+                if len(pairs) > 0:
+                    llm_aux_loss = llm_aux_loss / len(pairs) * self.llm_loss_weight
 
 
             if loss_count > 0:
                 loss_spatial = total_spatial_loss / loss_count
-                return loss_itc, loss_itm, loss_bb, loss_spatial
+                total_loss_spatial = loss_spatial + llm_aux_loss
+                return loss_itc, loss_itm, loss_bb, total_loss_spatial
             else:
                 return loss_itc, loss_itm, loss_bb
         

@@ -482,7 +482,10 @@ class XVLMBase(nn.Module):
         image_embeds_neg = []
         image_atts_neg = []
         for b in range(bs):
-            neg_idx = torch.multinomial(weights_t2i[b], 1).item()
+            prob_t2i = weights_t2i[b].clone()
+            if prob_t2i.sum() <= 0:
+                prob_t2i = torch.ones_like(prob_t2i) / prob_t2i.size(0)
+            neg_idx = torch.multinomial(prob_t2i, 1).item()
             image_embeds_neg.append(image_embeds[neg_idx])
             image_atts_neg.append(image_atts[neg_idx])
 
@@ -492,7 +495,10 @@ class XVLMBase(nn.Module):
         text_embeds_neg = []
         text_atts_neg = []
         for b in range(bs):
-            neg_idx = torch.multinomial(weights_i2t[b], 1).item()
+            prob_i2t = weights_i2t[b].clone()
+            if prob_i2t.sum() <= 0:
+              prob_i2t = torch.ones_like(prob_i2t) / prob_i2t.size(0)
+            neg_idx = torch.multinomial(prob_i2t, 1).item()
             text_embeds_neg.append(text_embeds[neg_idx])
             text_atts_neg.append(text_atts[neg_idx])
 
