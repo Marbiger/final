@@ -67,7 +67,18 @@ class Bench(XVLMBase):
 
     def load_pretrained(self, ckpt_rpath, config, is_eval=False):
         state_dict = load_pretrained(ckpt_rpath, config, is_eval=is_eval, load_text=True)
-        msg = self.load_state_dict(state_dict, strict=False)
+        # msg = self.load_state_dict(state_dict, strict=False)
+
+        model_dict = self.state_dict()
+        matched_state_dict = {}
+        for k, v in state_dict.items():
+            if k in model_dict and v.shape == model_dict[k].shape:
+                matched_state_dict[k] = v
+            else:
+                print(f"Skipping {k}: pretrained shape {v.shape} vs current {model_dict[k].shape if k in model_dict else 'missing'}")
+        
+        model_dict.update(matched_state_dict)
+        msg = self.load_state_dict(model_dict, strict=False)
         print('load checkpoint from %s' % ckpt_rpath)
         print("missing_keys: ", [p for p in msg.missing_keys if 'vision_encoder' not in p])
         print("unexpected_keys: ", msg.unexpected_keys)
@@ -93,7 +104,6 @@ class Bench(XVLMBase):
             loss_bb = 0
             size = 12 
             all_valid_bboxes = [] 
-            student_logits_list = []
 
             for i in range(n):
                 num = pair[i][0]
@@ -131,7 +141,6 @@ class Bench(XVLMBase):
                 if spatial_result is not None: 
                     spatial_loss, spatial_logits = spatial_result
                     total_spatial_loss += spatial_loss
-                    student_logits_list.append(spatial_logits)
                     loss_count += 1
                     
                 if self.llm_interface is not None:
