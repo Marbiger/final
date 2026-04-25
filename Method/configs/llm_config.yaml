@@ -1,5 +1,5 @@
 model:
-  name: "/public/home/xuchg2022/Qwen2.5-7B-Instruct/Qwen2.5-7B-Instruct/"
+  name: "/public/home/xuchg2022/Qwen2.5-1.5B-Instruct/"
   device: "cuda"
   precision: "fp16"
 

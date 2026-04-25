@@ -40,6 +40,9 @@ optimizer: {opt: adamW, lr: 3e-5, weight_decay: 0.01, lr_mult: 2}
 schedular: {sched: linear, lr: 1e-5, epochs: 1, num_warmup_steps: 0.1}
 
 
-use_llm_for_spatial: false
+use_llm_for_spatial: True
 llm_config_path: 'configs/llm_config.yaml'
 llm_loss_weight: 0.01  
+
+distill_temperature: 4.0
+distill_weight: 0.5
