@@ -182,6 +182,36 @@ class SpatialLLMInterface(nn.Module):
             confidence=confidence,
             logits=logits
         )
+    
+    def predict_spatial_relation_logits(self, bbox1, bbox2):
+        """
+        Returns: torch.Tensor of shape [1, 9] (softmaxed probabilities)
+        """
+        prompt = self._build_prompt(bbox1, bbox2)
+        messages = self._build_chat_messages(prompt)
+        inputs = self.tokenizer.apply_chat_template(messages, add_generation_prompt=True, return_tensors="pt").to(self.device)
+
+        gen_config = GenerationConfig(
+            max_new_tokens=1,
+            temperature=1.0,
+            do_sample=False,
+            output_scores=True,
+            return_dict_in_generate=True,
+        )
+        with torch.no_grad():
+            outputs = self.model.generate(inputs, generation_config=gen_config)
+
+        last_token_logits = outputs.scores[0][0]   # [vocab_size]
+
+        class_words = ["left", "right", "above", "below", "center", "upper_left", "upper_right", "lower_left", "lower_right"]
+        token_ids = []
+        for w in class_words:
+            token_id = self.tokenizer.encode(w, add_special_tokens=False)
+
+            token_ids.append(token_id[0] if token_id else 0)
+        logits = last_token_logits[token_ids]   # [9]
+        probs = torch.softmax(logits, dim=-1)
+        return probs   # [9]
 
     def batch_predict_spatial_relations(
         self,

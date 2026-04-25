@@ -340,7 +340,7 @@ class XVLMBase(nn.Module):
             self.init_params.extend(['bbox_head.' + n for n, _ in self.bbox_head.named_parameters()])
 
         if use_spatial_loss:
-            self.spatial_head = build_mlp(input_dim=self.text_width, output_dim=6)               # （左 中 右）  （0， 1， 2） （上 中 下）  （0， 1， 2）  
+            self.spatial_head = build_mlp(input_dim=self.text_width, output_dim=9)              
             self.init_params.extend(['spaital_head.' + n for n, _ in self.spatial_head.named_parameters()])
 
     def load_pretrained(self, ckpt_rpath, config, is_eval=False):
@@ -630,47 +630,22 @@ class XVLMBase(nn.Module):
         spa = self.bbox_feature_map(textA_bbox_, image_feature_map)
         spa_ = self.bbox_feature_map(textB_bbox_, image_feature_map)
         output_cls = self.whole_feature(spa,spa_)
-        output_id = self.spatial_head(output_cls).sigmoid()
+        output_id = self.spatial_head(output_cls)   # delete .sigmoid()
         
         return output_id
 
 
     # def get_spatial_relation_loss(self, textA_input, textA_embeds, textB_input, textB_embeds, textA_bbox, textB_bbox, image_feature_map, target_ids):
     def get_spatial_relation_loss(self, textA_bbox, textB_bbox, image_feature_map, target_ids):
-    #     """
-    #     Get the loss for predicting spatial relation words in a masked sentence.
-    #     Args:
-    #         textA_embeds textB_embeds: the encoding of the spatial relation sentences
-    #         target_ids: the ids of the target spatial relation words
-    #     Returns: the spatial relation loss
-    #     """
-    #     # Use the model to predict the ids of the masked position relation words
-        pred_ids = self.spatial_relation_predictor(textA_bbox, textB_bbox, image_feature_map)
 
-        # pred_ids = self.spatial_relation_predictor(textA_input, textA_embeds, textB_input, textB_embeds, textA_bbox, textB_bbox, image_feature_map)
-        # print('Here is the pred_ids shape', pred_ids.shape)
-        # print('Here is the pred_ids',pred_ids)
-        # print('Here is the target_ids shape', target_ids.shape)
+        pred_logits = self.get_spatial_relation_logits(textA_bbox, textB_bbox, image_feature_map)  # [1,9]
 
-        target_ids = target_ids.unsqueeze(0).to(device=pred_ids.device)
-        # pred_ids = pred_ids.squeeze().to(device=pred_ids.device)
+        target = target_ids.long()
+        loss = F.cross_entropy(pred_logits, target.unsqueeze(0))
 
-        # print('Here is the pred_ids_ shape', pred_ids.shape)
-        # print('Here is the pred_ids_',pred_ids)
-        # print('Here is the target_ids_ shape', target_ids.shape)
+        return loss
+    
+    def get_spatial_relation_logits(self, textA_bbox, textB_bbox, image_feature_map):
 
-        # assert pred_ids.shape==target_ids.shape
-        # Compute the loss between the predicted ids and the target ids
-
-        horizontal_logits = pred_ids[:, :3]
-        vertical_logits = pred_ids[:, 3:]
-
-        horizontal_targets = target_ids[:, 0]
-        vertical_targets = target_ids[:, 1]
-
-        loss_horizontal = F.cross_entropy(horizontal_logits, horizontal_targets)
-        loss_vertical = F.cross_entropy(vertical_logits, vertical_targets)
-
-        total_loss = loss_horizontal + loss_vertical
-
-        return total_loss
+        logits = self.spatial_relation_predictor(textA_bbox, textB_bbox, image_feature_map)
+        return logits

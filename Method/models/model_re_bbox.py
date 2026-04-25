@@ -5,6 +5,8 @@ import itertools
 from models.llm_interface import SpatialLLMInterface
 from utils.llm_utils import LLMCache
 
+import torch.nn.functional as F
+
 def compute_rela(bbox1, bbox2):
     x1, y1, w1, h1 = bbox1
     x2, y2, w2, h2 = bbox2
@@ -30,6 +32,13 @@ def compute_rela(bbox1, bbox2):
 
     return torch.tensor([horizontal, vertical])
 
+def distillation_loss(student_logits, teacher_probs, temperature=4.0):
+    teacher_probs_soft = teacher_probs ** (1.0 / temperature)
+    teacher_probs_soft = teacher_probs_soft / teacher_probs_soft.sum(dim=-1, keepdim=True)
+    student_log_probs = F.log_softmax(student_logits / temperature, dim=-1)
+    kd_loss = F.kl_div(student_log_probs, teacher_probs_soft, reduction='batchmean')
+    return kd_loss * (temperature ** 2)
+
 class Bench(XVLMBase):
     def __init__(self, config):
         super().__init__(config, load_vision_params=False, load_text_params=False,
@@ -44,10 +53,17 @@ class Bench(XVLMBase):
             self.llm_interface = SpatialLLMInterface(config['llm_config_path'])
             self.llm_cache = LLMCache()
             self.llm_loss_weight = config.get('llm_loss_weight', 0.01)
+            self.distill_temperature = config.get('distill_temperature', 4.0)
+            self.distill_weight = config.get('distill_weight', 0.5)
         else:
             self.llm_interface = None
             self.llm_cache = None
             self.llm_loss_weight = 0.0
+            self.distill_temperature = 4.0
+            self.distill_weight = 0.0
+
+        
+        
 
     def load_pretrained(self, ckpt_rpath, config, is_eval=False):
         state_dict = load_pretrained(ckpt_rpath, config, is_eval=is_eval, load_text=True)
@@ -57,6 +73,7 @@ class Bench(XVLMBase):
         print("unexpected_keys: ", msg.unexpected_keys)
 
     def forward(self, image, text_ids, text_atts, idx=None, pair=None):
+        device = image.device
         image_embeds, image_atts = self.get_vision_embeds(image)
         text_embeds = self.get_text_embeds(text_ids, text_atts)
         # output_coord & target_bbox: 64, 4
@@ -76,6 +93,8 @@ class Bench(XVLMBase):
             loss_bb = 0
             size = 12 
             all_valid_bboxes = [] 
+            student_logits_list = []
+
             for i in range(n):
                 num = pair[i][0]
 
@@ -107,11 +126,12 @@ class Bench(XVLMBase):
                     'image_feature_map': feature_map,
                     'num': pair[i][0]  # num
                 }
-                spatial_loss = self.bbox_collector.update_bbox(bbox_info)
+                spatial_result = self.bbox_collector.update_bbox(bbox_info)
 
-
-                if spatial_loss is not None: 
+                if spatial_result is not None: 
+                    spatial_loss, spatial_logits = spatial_result
                     total_spatial_loss += spatial_loss
+                    student_logits_list.append(spatial_logits)
                     loss_count += 1
                     
                 if self.llm_interface is not None:
@@ -128,44 +148,54 @@ class Bench(XVLMBase):
             self.bbox_collector.collect_bbox = []
             self.bbox_collector.current_num = None
             
-            llm_aux_loss = 0.0
+            distill_loss = 0.0
             if self.llm_interface is not None and len(all_valid_bboxes) >= 2:
-                
-                from itertools import combinations
-                pairs = list(combinations(all_valid_bboxes, 2))
-                for (b1_info, b2_info) in pairs:
-                    bbox1 = b1_info['bbox']
-                    bbox2 = b2_info['bbox']
-                    
-                    h_v = compute_rela(bbox1, bbox2)  # tensor [2]
-                    
-                    true_class = int(h_v[1] * 3 + h_v[0])
-                    
-                    cache_key = (tuple(bbox1), tuple(bbox2))
-                    cached = self.llm_cache.get(bbox1, bbox2) if self.llm_cache else None
-                    if cached:
-                        pred_class = cached['relation_class']
-                    else:
-                        result = self.llm_interface.predict_spatial_relation(
-                            tuple(bbox1), tuple(bbox2)
-                        )
-                        pred_class = result.relation_class
-                        if self.llm_cache:
-                            self.llm_cache.set(bbox1, bbox2, {
-                                'relation_class': pred_class,
-                                'relation_text': result.relation_text,
-                                'confidence': result.confidence
-                            })
-                    
-                    if pred_class != true_class:
-                        llm_aux_loss += 1.0
-                if len(pairs) > 0:
-                    llm_aux_loss = llm_aux_loss / len(pairs) * self.llm_loss_weight
+                from collections import defaultdict
+                groups = defaultdict(list)
+                for info in all_valid_bboxes:
+                    groups[info['num']].append(info)
 
+                teacher_pairs = []   
+                for num, items in groups.items():
+                    if len(items) < 2:
+                        continue
+                    from itertools import combinations
+                    for (info1, info2) in combinations(items, 2):
+                        teacher_pairs.append((info1['bbox'], info2['bbox'], info1['feature_map'])) 
 
+                if teacher_pairs:
+                    teacher_probs_list = []
+                    student_logits_list = []  
+                    for (bbox1, bbox2, feat_map) in teacher_pairs:
+
+                        bbox1_t = torch.tensor(bbox1, device=device)
+                        bbox2_t = torch.tensor(bbox2, device=device)
+                        student_logit = self.get_spatial_relation_logits(bbox1_t, bbox2_t, feat_map)   # [1,9]
+                        student_logits_list.append(student_logit)
+
+                        cache_key = (tuple(bbox1), tuple(bbox2))
+                        cached = self.llm_cache.get(bbox1, bbox2) if self.llm_cache else None
+                        if cached and 'probs' in cached:
+                            teacher_probs = torch.tensor(cached['probs'], device=device)
+                        else:
+                            teacher_probs = self.llm_interface.predict_spatial_relation_logits(bbox1, bbox2)  # [9]
+                            if self.llm_cache:
+                                self.llm_cache.set(bbox1, bbox2, {
+                                    'probs': teacher_probs.cpu().numpy(),
+                                    'relation_class': torch.argmax(teacher_probs).item()
+                                })
+                        teacher_probs_list.append(teacher_probs)
+                    
+                    if teacher_probs_list and student_logits_list:
+                        student_logits = torch.cat(student_logits_list, dim=0)       # [K, 9]
+                        teacher_probs = torch.stack(teacher_probs_list, dim=0)       # [K, 9]
+
+                        distill_loss = distillation_loss(student_logits, teacher_probs, temperature=self.distill_temperature)
+                        distill_loss = distill_loss * self.distill_weight
+            
             if loss_count > 0:
                 loss_spatial = total_spatial_loss / loss_count
-                total_loss_spatial = loss_spatial + llm_aux_loss
+                total_loss_spatial = loss_spatial + distill_loss
                 return loss_itc, loss_itm, loss_bb, total_loss_spatial
             else:
                 return loss_itc, loss_itm, loss_bb
@@ -199,30 +229,36 @@ class Bench(XVLMBase):
             if len(self.collect_bbox) == 2:
                 if new_num == self.current_num:
                     self.collect_bbox.append(bbox_info)
-                    loss = self.calculate_loss(self.collect_bbox)
+                    loss, logits = self.calculate_loss(self.collect_bbox)
                     self.collect_bbox = []
-                    return loss
+                    return loss, logits  
 
                 else:
-                    loss = self.calculate_loss(self.collect_bbox)
+                    loss, logits = self.calculate_loss(self.collect_bbox)
                     self.collect_bbox = []
                     self.collect_bbox.append(bbox_info)
                     self.current_num = new_num
-                    return loss
+                    return loss, logits
 
         def calculate_loss(self, bboxes):
             permutations = list(itertools.permutations(bboxes, 2))
+            total_loss = 0.0
+            logits_list = []
             for pair in permutations:
                 target_bbox_A = pair[0]['bbox']
                 target_bbox_B = pair[1]['bbox']
-                
-                feature_map = pair[0]['image_feature_map'] 
-                
-                target_ids = compute_rela(target_bbox_A, target_bbox_B)
+                feature_map = pair[0]['image_feature_map']
 
-                spatial_loss = self.parent.get_spatial_relation_loss(target_bbox_A, target_bbox_B, feature_map, target_ids)
+                hv = compute_rela(target_bbox_A, target_bbox_B)   # tensor [2]
+                target_class = int(hv[1] * 3 + hv[0])            # 0-8
 
-            return spatial_loss/len(permutations)
+                logits = self.parent.get_spatial_relation_logits(target_bbox_A, target_bbox_B, feature_map)
+                loss = F.cross_entropy(logits.unsqueeze(0), torch.tensor([target_class], device=logits.device))
+                total_loss = total_loss + loss
+                logits_list.append(logits)
+            avg_loss = total_loss / len(permutations)
+            avg_logits = torch.stack(logits_list).mean(dim=0) if logits_list else None
+            return avg_loss, avg_logits
 
 
         
