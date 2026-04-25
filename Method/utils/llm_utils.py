@@ -29,10 +29,14 @@ class LLMCache:
         
         cache_path = os.path.join(self.cache_dir, f"{key}.json")
         if os.path.exists(cache_path):
-            with open(cache_path, 'r') as f:
+        try:
+            with open(cache_path, 'r', encoding='utf-8') as f:
                 data = json.load(f)
                 self.memory_cache[key] = data
                 return data
+        except (json.JSONDecodeError, IOError, UnicodeDecodeError) as e:
+            print(f"Warning: Cache file {cache_path} is corrupted ({e}), removing it.")
+            os.remove(cache_path)
         
         return None
     
