@@ -149,7 +149,8 @@ class Bench(XVLMBase):
                     if bbox[0] > -99:
                         all_valid_bboxes.append({
                             'bbox': bbox.cpu().numpy(), 
-                            'num': num
+                            'num': num,
+                            'feature_map': feature_map
                         })
 
             loss_bb = 0.1 * loss_bb/n
@@ -190,7 +191,7 @@ class Bench(XVLMBase):
                             teacher_probs = self.llm_interface.predict_spatial_relation_logits(bbox1, bbox2)  # [9]
                             if self.llm_cache:
                                 self.llm_cache.set(bbox1, bbox2, {
-                                    'probs': teacher_probs.cpu().numpy(),
+                                    'probs': teacher_probs.cpu().numpy().tolist(),
                                     'relation_class': torch.argmax(teacher_probs).item()
                                 })
                         teacher_probs_list.append(teacher_probs)
@@ -262,7 +263,7 @@ class Bench(XVLMBase):
                 target_class = int(hv[1] * 3 + hv[0])            # 0-8
 
                 logits = self.parent.get_spatial_relation_logits(target_bbox_A, target_bbox_B, feature_map)
-                loss = F.cross_entropy(logits.unsqueeze(0), torch.tensor([target_class], device=logits.device))
+                loss = F.cross_entropy(logits, torch.tensor([target_class], device=logits.device))
                 total_loss = total_loss + loss
                 logits_list.append(logits)
             avg_loss = total_loss / len(permutations)
