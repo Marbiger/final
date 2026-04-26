@@ -22,7 +22,7 @@ text_encoder: '/public/home/xuchg2022/GeoText-1652/GeoText1652_model/bert'  # ['
 
 
 ## Training
-batch_size_train: 6
+batch_size_train: 3
 batch_size_test: 1
 batch_size_test_text: 512
 max_tokens: 50
